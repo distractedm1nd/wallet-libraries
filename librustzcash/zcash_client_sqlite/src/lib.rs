@@ -268,6 +268,85 @@ impl fmt::Display for ReceivedNoteId {
     }
 }
 
+/// An unspent Ironwood note that can be checked with the spendability PIR service.
+#[cfg(feature = "orchard")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PirIronwoodNote {
+    note_id: ReceivedNoteId,
+    nullifier: [u8; 32],
+    commitment: [u8; 32],
+    position: Position,
+    mined_height: BlockHeight,
+}
+
+#[cfg(feature = "orchard")]
+impl PirIronwoodNote {
+    /// Returns the wallet's identifier for this note.
+    pub fn note_id(&self) -> ReceivedNoteId {
+        self.note_id
+    }
+
+    /// Returns the note nullifier.
+    pub fn nullifier(&self) -> &[u8; 32] {
+        &self.nullifier
+    }
+
+    /// Returns the extracted note commitment.
+    pub fn commitment(&self) -> &[u8; 32] {
+        &self.commitment
+    }
+
+    /// Returns the note's position in the Ironwood commitment tree.
+    pub fn position(&self) -> Position {
+        self.position
+    }
+
+    /// Returns the height at which the note was mined.
+    pub fn mined_height(&self) -> BlockHeight {
+        self.mined_height
+    }
+}
+
+/// A PIR-provided authentication path for one Ironwood note.
+#[cfg(feature = "orchard")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PirIronwoodWitness {
+    note_id: ReceivedNoteId,
+    position: Position,
+    siblings: [[u8; 32]; orchard::NOTE_COMMITMENT_TREE_DEPTH],
+}
+
+#[cfg(feature = "orchard")]
+impl PirIronwoodWitness {
+    /// Constructs a witness from its raw authentication path.
+    pub fn new(
+        note_id: ReceivedNoteId,
+        position: Position,
+        siblings: [[u8; 32]; orchard::NOTE_COMMITMENT_TREE_DEPTH],
+    ) -> Self {
+        Self {
+            note_id,
+            position,
+            siblings,
+        }
+    }
+
+    /// Returns the wallet's identifier for the witnessed note.
+    pub fn note_id(&self) -> ReceivedNoteId {
+        self.note_id
+    }
+
+    /// Returns the witnessed note position.
+    pub fn position(&self) -> Position {
+        self.position
+    }
+
+    /// Returns the authentication path, ordered from leaf to root.
+    pub fn siblings(&self) -> &[[u8; 32]; orchard::NOTE_COMMITMENT_TREE_DEPTH] {
+        &self.siblings
+    }
+}
+
 /// A newtype wrapper for sqlite primary key values for the utxos table.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct UtxoId(pub(crate) i64);
@@ -774,6 +853,12 @@ impl<C: Borrow<rusqlite::Connection>, P: consensus::Parameters, CL, R> InputSour
         protocol: ShieldedPool,
         height: BlockHeight,
     ) -> Result<bool, Self::Error> {
+        #[cfg(feature = "orchard")]
+        if protocol == ShieldedPool::Ironwood
+            && wallet::pir::anchor_exists(self.conn.borrow(), height)?
+        {
+            return Ok(true);
+        }
         wallet::anchor_computable(self.conn.borrow(), protocol, height)
     }
 
@@ -1441,6 +1526,21 @@ impl<C: Borrow<rusqlite::Connection>, P: consensus::Parameters, CL, R> WalletRea
         query: NullifierQuery,
     ) -> Result<Vec<(Self::AccountId, orchard::note::Nullifier)>, Self::Error> {
         wallet::orchard::get_ironwood_nullifiers(self.conn.borrow(), query)
+    }
+
+    #[cfg(feature = "orchard")]
+    fn get_pir_ironwood_witness(
+        &self,
+        txid: &TxId,
+        output_index: u32,
+        anchor_height: BlockHeight,
+    ) -> Result<Option<(orchard::tree::Anchor, orchard::tree::MerklePath)>, Self::Error> {
+        wallet::pir::stored_witness(self.conn.borrow(), txid, output_index, anchor_height)
+    }
+
+    #[cfg(feature = "orchard")]
+    fn pir_ironwood_anchor_height(&self) -> Result<Option<BlockHeight>, Self::Error> {
+        wallet::pir::anchor_height(self.conn.borrow())
     }
 
     #[cfg(feature = "transparent-inputs")]
@@ -3488,6 +3588,11 @@ impl<'a, C: Borrow<rusqlite::Transaction<'a>>, P: consensus::Parameters, CL: Clo
 
 #[cfg(feature = "orchard")]
 impl<C: Borrow<rusqlite::Connection>, P: consensus::Parameters, CL, R> WalletDb<C, P, CL, R> {
+    /// Returns known, currently-unspent Ironwood notes for PIR spendability checks.
+    pub fn get_pir_ironwood_notes(&self) -> Result<Vec<PirIronwoodNote>, SqliteClientError> {
+        wallet::pir::known_unspent_notes(self.conn.borrow(), &self.params)
+    }
+
     /// Return all Orchard notes received at or before `height`
     /// and unspent as of that height, for the given account.
     ///
@@ -3628,6 +3733,30 @@ impl<C: Borrow<rusqlite::Connection>, P: consensus::Parameters, CL, R> WalletDb<
             frontier_at_height,
             height,
         )
+    }
+}
+
+#[cfg(feature = "orchard")]
+impl<C: BorrowMut<rusqlite::Connection>, P: consensus::Parameters, CL, R> WalletDb<C, P, CL, R> {
+    /// Clears all stored PIR Ironwood witnesses.
+    pub fn clear_pir_ironwood_witnesses(&mut self) -> Result<(), SqliteClientError> {
+        self.conn
+            .borrow_mut()
+            .execute("DELETE FROM pir_ironwood_witnesses", [])?;
+        Ok(())
+    }
+
+    /// Atomically replaces all stored PIR Ironwood witnesses after verifying their common anchor.
+    pub fn replace_pir_ironwood_witnesses(
+        &mut self,
+        anchor_height: BlockHeight,
+        anchor_root: [u8; 32],
+        witnesses: &[PirIronwoodWitness],
+    ) -> Result<(), SqliteClientError> {
+        let tx = self.conn.borrow_mut().transaction()?;
+        wallet::pir::replace_witnesses(&tx, &self.params, anchor_height, anchor_root, witnesses)?;
+        tx.commit()?;
+        Ok(())
     }
 }
 

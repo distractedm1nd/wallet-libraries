@@ -254,7 +254,8 @@ fn sqlite_client_error_to_wallet_migration_error(e: SqliteClientError) -> Wallet
         }
         #[cfg(feature = "orchard")]
         SqliteClientError::HistoricalFrontierInvalid(_)
-        | SqliteClientError::HistoricalWitnessUnavailable { .. } => {
+        | SqliteClientError::HistoricalWitnessUnavailable { .. }
+        | SqliteClientError::PirWitnessInvalid(_) => {
             unreachable!("we do not generate historical witnesses in migrations")
         }
         #[cfg(feature = "transparent-inputs")]
@@ -831,6 +832,7 @@ mod tests {
             db::TABLE_ORCHARD_TREE_CHECKPOINTS,
             db::TABLE_ORCHARD_TREE_RETAINED_CHECKPOINTS,
             db::TABLE_ORCHARD_TREE_SHARDS,
+            db::TABLE_PIR_IRONWOOD_WITNESSES,
             db::TABLE_SAPLING_RECEIVED_NOTE_SPENDS,
             db::TABLE_SAPLING_RECEIVED_NOTES,
             db::TABLE_SAPLING_TREE_CAP,

@@ -188,6 +188,8 @@ pub mod init;
 pub(crate) mod locking;
 #[cfg(feature = "orchard")]
 pub(crate) mod orchard;
+#[cfg(feature = "orchard")]
+pub(crate) mod pir;
 pub(crate) mod sapling;
 pub(crate) mod scanning;
 #[cfg(feature = "transparent-inputs")]
@@ -4182,6 +4184,8 @@ pub(crate) fn truncate_to_height_internal<P: consensus::Parameters>(
     truncation_height: BlockHeight,
     rescan_floor: BlockHeight,
 ) -> Result<BlockHeight, SqliteClientError> {
+    conn.execute("DELETE FROM pir_ironwood_witnesses", [])?;
+
     let last_scanned_height = conn.query_row("SELECT MAX(height) FROM blocks", [], |row| {
         let h = row.get::<_, Option<u32>>(0)?;
 
@@ -4445,6 +4449,10 @@ pub(crate) fn truncate_to_chain_state<P: consensus::Parameters, CL, R>(
     wdb: &mut WalletDb<SqlTransaction<'_>, P, CL, R>,
     chain_state: ChainState,
 ) -> Result<(), SqliteClientError> {
+    wdb.conn
+        .0
+        .execute("DELETE FROM pir_ironwood_witnesses", [])?;
+
     let target_height = chain_state.block_height();
 
     // Only truncate trees when the maximum scanned height is greater than the target height. When
@@ -4630,6 +4638,10 @@ pub(crate) fn rewind_to_chain_state<P: consensus::Parameters>(
     chain_state: &ChainState,
     reset_account_birthdays: HashSet<AccountUuid>,
 ) -> Result<(), RewindError<AccountUuid, SqliteClientError>> {
+    conn.execute("DELETE FROM pir_ironwood_witnesses", [])
+        .map_err(SqliteClientError::from)
+        .map_err(RewindError::DataSource)?;
+
     // Load every account's birthday so we can validate `reset_account_birthdays` against the
     // wallet's accounts and check whether at least one existing birthday is at or below the
     // proposed new birthday floor.

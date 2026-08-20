@@ -339,6 +339,24 @@ impl NoteRequest {
     }
 }
 
+fn selection_anchor_height(
+    conn: &Connection,
+    target_height: TargetHeight,
+    confirmations_policy: ConfirmationsPolicy,
+    _protocol: ShieldedPool,
+) -> Result<Option<BlockHeight>, SqliteClientError> {
+    #[cfg(feature = "orchard")]
+    if _protocol == ShieldedPool::Ironwood {
+        let latest_usable = confirmations_policy.anchor_height(target_height);
+        if let Some(anchor) =
+            crate::wallet::pir::anchor_height(conn)?.filter(|height| *height <= latest_usable)
+        {
+            return Ok(Some(anchor));
+        }
+    }
+    get_anchor_height(conn, target_height, confirmations_policy.trusted())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn select_spendable_notes<P: consensus::Parameters, F, Note>(
     conn: &Connection,
@@ -360,7 +378,7 @@ where
     ) -> Result<Option<ReceivedNote<ReceivedNoteId, Note>>, SqliteClientError>,
 {
     let Some(anchor_height) =
-        get_anchor_height(conn, target_height, confirmations_policy.trusted())?
+        selection_anchor_height(conn, target_height, confirmations_policy, protocol)?
     else {
         return Ok(vec![]);
     };
@@ -420,7 +438,7 @@ where
     ) -> Result<Option<ReceivedNote<ReceivedNoteId, Note>>, SqliteClientError>,
 {
     let Some(anchor_height) =
-        get_anchor_height(conn, target_height, confirmations_policy.trusted())?
+        selection_anchor_height(conn, target_height, confirmations_policy, protocol)?
     else {
         return Ok(None);
     };
@@ -472,7 +490,7 @@ where
     }
 
     let Some(anchor_height) =
-        get_anchor_height(conn, target_height, confirmations_policy.trusted())?
+        selection_anchor_height(conn, target_height, confirmations_policy, protocol)?
     else {
         return Ok((vec![], vec![]));
     };
@@ -578,6 +596,23 @@ where
         note_reconstruction_cols,
         ..
     } = table_constants::<SqliteClientError>(protocol)?;
+    #[cfg(feature = "orchard")]
+    let pir_anchor = note_request
+        .anchor_height()
+        .filter(|_| protocol == ShieldedPool::Ironwood)
+        .map(|height| crate::wallet::pir::anchor_exists(conn, height))
+        .transpose()?
+        .is_some_and(|exists| exists);
+    #[cfg(not(feature = "orchard"))]
+    let pir_anchor = false;
+    let pir_note_filter = if pir_anchor {
+        "AND rn.id IN (
+             SELECT note_id FROM pir_ironwood_witnesses
+             WHERE anchor_height = :pir_anchor_height
+         )"
+    } else {
+        ""
+    };
 
     // Select all unspent notes belonging to the given account, ignoring dust notes.
     let mut stmt_select_notes = conn.prepare_cached(&format!(
@@ -612,6 +647,7 @@ where
          AND ({})  -- the transaction is unexpired
          AND rn.id NOT IN rarray(:exclude)  -- the note is not excluded
          AND rn.id NOT IN ({})  -- the note is unspent
+         {pir_note_filter}
          AND ({}) -- the note is eligible under the lock filter
          GROUP BY rn.id",
         tx_unexpired_condition("t"),
@@ -633,6 +669,10 @@ where
 
     let account_uuid = account.0;
     let target_height_arg = u32::from(target_height);
+    let pir_anchor_height_arg = note_request
+        .anchor_height()
+        .map(u32::from)
+        .unwrap_or_default();
     let min_value = u64::from(zip317::MARGINAL_FEE);
     let overridable_owners = overridable_owners_rarray(lock_filter);
     let mut sql_params: Vec<(&str, &dyn ToSql)> = vec![
@@ -641,6 +681,9 @@ where
         (":exclude", &excluded_ptr),
         (":min_value", &min_value),
     ];
+    if pir_anchor {
+        sql_params.push((":pir_anchor_height", &pir_anchor_height_arg));
+    }
     push_lock_params(&mut sql_params, lock_filter, &overridable_owners);
 
     let row_results = stmt_select_notes.query_and_then(
@@ -680,7 +723,8 @@ where
                 tx_trusted,
                 tx_shielding_inputs_trusted,
             ) => {
-                let shard_witness_available = witness_stabilized
+                let shard_witness_available = pir_anchor
+                    || witness_stabilized
                     || max_shard_priority.is_some_and(|p| p <= ScanPriority::Scanned);
 
                 let mined_at_anchor = note
@@ -771,10 +815,23 @@ where
         note_reconstruction_cols,
         ..
     } = table_constants::<SqliteClientError>(protocol)?;
+    #[cfg(feature = "orchard")]
+    let pir_anchor = protocol == ShieldedPool::Ironwood
+        && crate::wallet::pir::anchor_exists(conn, anchor_height)?;
+    #[cfg(not(feature = "orchard"))]
+    let pir_anchor = false;
+    let pir_note_filter = if pir_anchor {
+        "AND rn.id IN (
+             SELECT note_id FROM pir_ironwood_witnesses
+             WHERE anchor_height = :anchor_height
+         )"
+    } else {
+        ""
+    };
 
     // When an anchor exists within an unscanned range, nodes without stabilized witness data will
     // not be reliably constructable. The selection query will use this to filter out such notes.
-    let tip_unscanned = unscanned_tip_exists(conn, anchor_height, table_prefix)?;
+    let tip_unscanned = !pir_anchor && unscanned_tip_exists(conn, anchor_height, table_prefix)?;
 
     // The goal of this SQL statement is to select the oldest notes until the required
     // value has been reached.
@@ -901,9 +958,12 @@ where
              -- The note must be mined at or below the anchor for the anchor's tree
              -- frontier to witness it
              AND t.block <= :anchor_height
+             {pir_note_filter}
              -- A stabilized note's witness is durable across rewinds, so it bypasses
              -- the scan-state gating
              AND (
+                 :pir_anchor = 1
+                 OR
                  rn.witness_stabilized = 1
                  OR (
                      :tip_unscanned = 0 -- the tip shard has no unscanned ranges
@@ -937,6 +997,7 @@ where
     let target_value_arg = u64::from(target_value);
     let scanned_priority = priority_code(&ScanPriority::Scanned);
     let tip_unscanned_arg = i64::from(tip_unscanned);
+    let pir_anchor_arg = i64::from(pir_anchor);
     let min_value = u64::from(zip317::MARGINAL_FEE);
     let overridable_owners = overridable_owners_rarray(lock_filter);
     let mut sql_params: Vec<(&str, &dyn ToSql)> = vec![
@@ -946,6 +1007,7 @@ where
         (":exclude", &excluded_ptr),
         (":scanned_priority", &scanned_priority),
         (":tip_unscanned", &tip_unscanned_arg),
+        (":pir_anchor", &pir_anchor_arg),
         (":min_value", &min_value),
     ];
     if matches!(
@@ -1330,13 +1392,36 @@ pub(crate) fn unspent_notes_meta(
 
 #[cfg(test)]
 mod tests {
-    use zcash_client_backend::data_api::testing::{
-        AddressType, TestBuilder, pool::ShieldedPoolTester, sapling::SaplingPoolTester,
+    use rusqlite::Connection;
+    use zcash_client_backend::data_api::{
+        testing::{AddressType, TestBuilder, pool::ShieldedPoolTester, sapling::SaplingPoolTester},
+        wallet::{ConfirmationsPolicy, TargetHeight},
     };
     use zcash_primitives::block::BlockHash;
     use zcash_protocol::{ShieldedPool, value::Zatoshis};
 
     use crate::testing::{BlockCache, db::TestDbFactory};
+
+    #[test]
+    fn ironwood_selection_uses_pir_anchor() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE pir_ironwood_witnesses (anchor_height INTEGER NOT NULL);
+             INSERT INTO pir_ironwood_witnesses VALUES (10);",
+        )
+        .unwrap();
+
+        assert_eq!(
+            super::selection_anchor_height(
+                &conn,
+                TargetHeight::from(zcash_protocol::consensus::BlockHeight::from_u32(20)),
+                ConfirmationsPolicy::MIN,
+                ShieldedPool::Ironwood,
+            )
+            .unwrap(),
+            Some(zcash_protocol::consensus::BlockHeight::from_u32(10))
+        );
+    }
 
     #[test]
     fn select_unspent_note_meta() {

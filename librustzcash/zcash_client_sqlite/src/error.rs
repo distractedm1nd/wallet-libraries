@@ -184,6 +184,10 @@ pub enum SqliteClientError {
         height: BlockHeight,
     },
 
+    /// A PIR-provided Ironwood witness does not match its wallet note or anchor.
+    #[cfg(feature = "orchard")]
+    PirWitnessInvalid(String),
+
     /// The block at the specified height was not available from the block cache.
     CacheMiss(BlockHeight),
 
@@ -414,6 +418,10 @@ impl fmt::Display for SqliteClientError {
                 "No witness is available for position {} at height {height} (the wallet may need to sync through this height).",
                 u64::from(*position),
             ),
+            #[cfg(feature = "orchard")]
+            SqliteClientError::PirWitnessInvalid(reason) => {
+                write!(f, "Invalid PIR Ironwood witness: {reason}")
+            }
             SqliteClientError::CacheMiss(height) => write!(
                 f,
                 "Requested height {height} does not exist in the block cache."
