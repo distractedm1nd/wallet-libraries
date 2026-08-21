@@ -277,6 +277,7 @@ pub struct PirIronwoodNote {
     commitment: [u8; 32],
     position: Position,
     mined_height: BlockHeight,
+    value: Zatoshis,
 }
 
 #[cfg(feature = "orchard")]
@@ -305,6 +306,12 @@ impl PirIronwoodNote {
     pub fn mined_height(&self) -> BlockHeight {
         self.mined_height
     }
+
+    /// Returns the note value.
+    pub fn value(&self) -> Zatoshis {
+        self.value
+    }
+
 }
 
 /// A PIR-provided authentication path for one Ironwood note.

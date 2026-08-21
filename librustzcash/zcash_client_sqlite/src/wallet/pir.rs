@@ -190,6 +190,7 @@ pub(crate) fn known_unspent_notes<P: consensus::Parameters>(
             commitment: ExtractedNoteCommitment::from(note.note().commitment()).to_bytes(),
             position: note.note_commitment_tree_position(),
             mined_height,
+            value: note.note_value()?,
         })
     })?;
     rows.collect()
