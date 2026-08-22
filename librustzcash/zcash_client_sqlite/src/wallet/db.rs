@@ -604,6 +604,16 @@ CREATE INDEX idx_ironwood_received_note_spends_transaction_id ON ironwood_receiv
     transaction_id ASC
 )";
 
+pub(super) const TABLE_PIR_IRONWOOD_WITNESSES: &str = "
+CREATE TABLE pir_ironwood_witnesses (
+    note_id INTEGER PRIMARY KEY
+        REFERENCES ironwood_received_notes(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    anchor_height INTEGER NOT NULL,
+    anchor_root BLOB NOT NULL CHECK (length(anchor_root) = 32),
+    auth_path BLOB NOT NULL CHECK (length(auth_path) = 1024)
+)";
+
 // The in-progress Orchard -> Ironwood pool migration (ZIP 318). The table DDL and store live in the
 // `crate::pool_migration` module; these golden copies track the normalized schema those tables
 // install into `wallet.db`. Every structured value is stored in typed columns and child tables; the

@@ -2427,6 +2427,23 @@ pub trait WalletRead {
         query: NullifierQuery,
     ) -> Result<Vec<(Self::AccountId, orchard::note::Nullifier)>, Self::Error>;
 
+    /// Returns a PIR-provided Ironwood anchor and authentication path for the specified note.
+    #[cfg(feature = "orchard")]
+    fn get_pir_ironwood_witness(
+        &self,
+        _txid: &TxId,
+        _output_index: u32,
+        _anchor_height: BlockHeight,
+    ) -> Result<Option<(orchard::tree::Anchor, orchard::tree::MerklePath)>, Self::Error> {
+        Ok(None)
+    }
+
+    /// Returns the anchor height of the current validated PIR Ironwood witness set.
+    #[cfg(feature = "orchard")]
+    fn pir_ironwood_anchor_height(&self) -> Result<Option<BlockHeight>, Self::Error> {
+        Ok(None)
+    }
+
     /// Returns the set of non-ephemeral transparent receivers associated with the given
     /// account controlled by this wallet.
     ///

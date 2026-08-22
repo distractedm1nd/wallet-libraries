@@ -38,6 +38,7 @@ mod orchard_ironwood_migration_unsatisfiability;
 mod orchard_note_version;
 mod orchard_received_notes;
 mod orchard_shardtree;
+mod pir_ironwood_witnesses;
 mod received_notes_nullable_nf;
 mod receiving_key_scopes;
 mod sapling_memo_consistency;
@@ -140,6 +141,7 @@ pub mod ids {
         orchard_note_version::MIGRATION_ID as ORCHARD_NOTE_VERSION,
         orchard_received_notes::MIGRATION_ID as ORCHARD_RECEIVED_NOTES,
         orchard_shardtree::MIGRATION_ID as ORCHARD_SHARDTREE,
+        pir_ironwood_witnesses::MIGRATION_ID as PIR_IRONWOOD_WITNESSES,
         received_notes_nullable_nf::MIGRATION_ID as RECEIVED_NOTES_NULLABLE_NF,
         receiving_key_scopes::MIGRATION_ID as RECEIVING_KEY_SCOPES,
         sapling_memo_consistency::MIGRATION_ID as SAPLING_MEMO_CONSISTENCY,
@@ -373,6 +375,7 @@ pub(super) fn all_migrations<
         Box::new(orchard_ironwood_migration_anchor_interval::Migration),
         Box::new(v_tx_outputs_transparent_addresses::Migration),
         Box::new(orchard_ironwood_migration_unsatisfiability::Migration),
+        Box::new(pir_ironwood_witnesses::Migration),
     ]
 }
 
@@ -574,6 +577,7 @@ pub const CURRENT_LEAF_MIGRATIONS: &[Uuid] = &[
     tree_retained_checkpoints::MIGRATION_ID,
     tx_status_observation_intent::MIGRATION_ID,
     v_transactions_zip318_kind::MIGRATION_ID,
+    pir_ironwood_witnesses::MIGRATION_ID,
 ];
 
 pub(super) fn verify_network_compatibility<P: consensus::Parameters>(
@@ -700,6 +704,7 @@ pub(crate) mod tests {
             ids::ORCHARD_NOTE_VERSION,
             ids::ORCHARD_RECEIVED_NOTES,
             ids::ORCHARD_SHARDTREE,
+            ids::PIR_IRONWOOD_WITNESSES,
             ids::RECEIVED_NOTES_NULLABLE_NF,
             ids::RECEIVING_KEY_SCOPES,
             ids::SAPLING_MEMO_CONSISTENCY,

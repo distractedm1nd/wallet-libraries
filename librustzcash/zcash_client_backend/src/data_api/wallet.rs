@@ -807,6 +807,22 @@ where
     let (target_height, anchor_height) =
         maybe_intial_heights.ok_or_else(|| InputSelectorError::SyncRequired)?;
 
+    #[cfg(feature = "orchard")]
+    let anchor_height = {
+        let mut anchor_height = anchor_height;
+        if spend_policy.permits_shielded(ShieldedPool::Ironwood) {
+            let latest_usable = confirmations_policy.anchor_height(target_height);
+            if let Some(pir_anchor) = wallet_db
+                .pir_ironwood_anchor_height()
+                .map_err(InputSelectorError::DataSource)?
+                .filter(|height| *height <= latest_usable)
+            {
+                anchor_height = pir_anchor;
+            }
+        }
+        anchor_height
+    };
+
     // The ZIP 318 parameters in force for THIS wallet. The anchor bucket grid must come from the
     // wallet rather than the network defaults: the wallet is the side that retains the
     // checkpoints, so its grid is the only one a crossing can actually be proved against, and
@@ -1847,8 +1863,49 @@ where
     // outputs (for example a pure-Sapling spend or a transparent-to-Sapling shielding) must not
     // require an Ironwood anchor, even once Ironwood is active.
     #[cfg(feature = "orchard")]
-    let (ironwood_anchor, ironwood_inputs) =
-        if proposal_step.involves(PoolType::Shielded(ShieldedPool::Ironwood)) {
+    let (ironwood_anchor, ironwood_inputs) = if proposal_step
+        .involves(PoolType::Shielded(ShieldedPool::Ironwood))
+    {
+        let selected_inputs = proposal_step
+            .shielded_inputs()
+            .into_iter()
+            .flat_map(|inputs| inputs.notes())
+            .filter_map(|selected| match selected.note() {
+                Note::Orchard {
+                    note,
+                    pool: orchard::ValuePool::Ironwood,
+                } => Some((selected, note)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let pir_inputs = selected_inputs
+            .iter()
+            .map(|(selected, note)| {
+                wallet_db
+                    .get_pir_ironwood_witness(
+                        selected.txid(),
+                        selected.output_index().into(),
+                        anchor_height,
+                    )
+                    .map(|witness| witness.map(|(anchor, path)| (anchor, *note, path)))
+                    .map_err(Error::DataSource)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        if !pir_inputs.is_empty() && pir_inputs.iter().all(Option::is_some) {
+            let mut pir_inputs = pir_inputs.into_iter().flatten();
+            let (anchor, note, path) = pir_inputs.next().expect("PIR inputs are nonempty");
+            let mut inputs = vec![(note, path)];
+            for (input_anchor, note, path) in pir_inputs {
+                if input_anchor != anchor {
+                    return Err(Error::ProposalNotSupported);
+                }
+                inputs.push((note, path));
+            }
+            (Some(anchor), inputs)
+        } else if pir_inputs.iter().any(Option::is_some) {
+            return Err(Error::ProposalNotSupported);
+        } else {
             wallet_db
                 .with_ironwood_tree_mut::<_, _, Error<_, _, _, _, _, _>>(|ironwood_tree| {
                     let anchor = ironwood_tree
@@ -1856,42 +1913,30 @@ where
                         .ok_or(ProposalError::AnchorNotFound(anchor_height))?
                         .into();
 
-                    let ironwood_inputs = proposal_step
-                        .shielded_inputs()
-                        .map(|inputs| {
-                            inputs
-                                .notes()
-                                .iter()
-                                .filter_map(|selected| match selected.note() {
-                                    Note::Orchard {
-                                        note,
-                                        pool: orchard::ValuePool::Ironwood,
-                                    } => ironwood_tree
-                                        .witness_at_checkpoint_id_caching(
-                                            selected.note_commitment_tree_position(),
-                                            &anchor_height,
-                                        )
-                                        .and_then(|witness| {
-                                            witness.ok_or(ShardTreeError::Query(
-                                                QueryError::CheckpointPruned,
-                                            ))
-                                        })
-                                        .map(|merkle_path| Some((note, merkle_path.into())))
-                                        .map_err(Error::from)
-                                        .transpose(),
-                                    _ => None,
+                    let ironwood_inputs = selected_inputs
+                        .iter()
+                        .map(|(selected, note)| {
+                            ironwood_tree
+                                .witness_at_checkpoint_id_caching(
+                                    selected.note_commitment_tree_position(),
+                                    &anchor_height,
+                                )
+                                .and_then(|witness| {
+                                    witness
+                                        .ok_or(ShardTreeError::Query(QueryError::CheckpointPruned))
                                 })
-                                .collect::<Result<Vec<_>, Error<_, _, _, _, _, _>>>()
+                                .map(|merkle_path| (*note, merkle_path.into()))
+                                .map_err(Error::from)
                         })
-                        .transpose()?
-                        .unwrap_or_default();
+                        .collect::<Result<Vec<_>, Error<_, _, _, _, _, _>>>()?;
 
                     Ok((Some(anchor), ironwood_inputs))
                 })?
                 .ok_or(Error::ProposalNotSupported)?
-        } else {
-            (None, vec![])
-        };
+        }
+    } else {
+        (None, vec![])
+    };
 
     #[cfg(not(feature = "orchard"))]
     let ironwood_anchor = None;
